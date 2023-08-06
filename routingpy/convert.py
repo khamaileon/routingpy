@@ -18,6 +18,11 @@
 """
 import datetime
 
+import pytz
+from timezonefinder import TimezoneFinder
+
+_TZ_FINDER = TimezoneFinder()
+
 
 def delimit_list(arg, delimiter=","):
     """Convert list to delimiter-separated string"""
@@ -108,3 +113,21 @@ def seconds_to_iso8601(seconds):
         iso8601_duration += f"{seconds}S"
 
     return iso8601_duration
+
+
+def timestamp_to_tz_datetime(timestamp: int, timezone: str) -> datetime.datetime:
+    """
+    Converts a UTC timestamp (in seconds) and timezone string to a timezone aware
+    datetime.datetime object
+
+    :param timestamp: The UTC timestamp, i.e. UNIX epoch in seconds.
+    :param timezone: The timezone string, e.g. 'US/Eastern' or 'Europe/Berlin'
+    :returns: the timezone aware datetime object
+    """
+    dt = datetime.datetime.fromtimestamp(timestamp)
+    timezone = pytz.timezone(timezone)
+    return dt.astimezone(timezone)
+
+
+def lonlat_to_timezone(lon: float, lat: float) -> str:
+    return _TZ_FINDER.timezone_at(lng=lon, lat=lat)

@@ -14,16 +14,14 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 #
-
 import datetime
 from operator import itemgetter
 from typing import List, Optional, Tuple, Union
 
-import pytz
-
 from .. import convert, utils
 from ..client_base import DEFAULT
 from ..client_default import Client
+from ..convert import timestamp_to_tz_datetime
 from ..direction import Direction, Directions
 from ..exceptions import OverQueryLimit, RouterApiError, RouterServerError
 from ..matrix import Matrix
@@ -189,8 +187,8 @@ class Google:
         language: Optional[str] = None,
         region: Optional[str] = None,
         units: Optional[str] = None,
-        arrival_time: Optional[int] = None,
-        departure_time: Optional[int] = None,
+        date_time: Optional[datetime.datetime] = datetime.datetime.now(datetime.timezone.utc),
+        date_time_type: Optional[str] = None,
         traffic_model: Optional[str] = None,
         transit_mode: Optional[Union[List[str], Tuple[str]]] = None,
         transit_routing_preference: Optional[str] = None,
@@ -204,41 +202,20 @@ class Google:
             from in order of visit. Can be a list/tuple of [lon, lat], a list/tuple of address strings, Google's
             Place ID's, a :class:`Google.WayPoint` instance or a combination of these. Note, the first and last location have to be specified as [lon, lat].
             Optionally, specify ``optimize=true`` for via waypoint optimization.
-        :type locations: list of list or list of :class:`Google.WayPoint`
-
         :param profile: The vehicle for which the route should be calculated.
             Default "driving". One of ['driving', 'walking', 'bicycling', 'transit'].
-        :type profile: str
-
         :param alternatives: Specifies whether more than one route should be returned.
             Only available for requests without intermediate waypoints. Default False.
-        :type alternatives: bool
-
         :param avoid: Indicates that the calculated route(s) should avoid the indicated features. One or more of
             ['tolls', 'highways', 'ferries', 'indoor']. Default None.
-        :type avoid: list of str
-
         :param optimize: Optimize the given order of via waypoints (i.e. between first and last location). Default False.
-        :type optimize: bool
-
         :param language: Language for routing instructions. The locale of the resulting turn instructions. Visit
             https://developers.google.com/maps/faq#languagesupport for options.
-        :type language: str
-
         :param region: Specifies the region code, specified as a ccTLD ("top-level domain") two-character value.
             See https://developers.google.com/maps/documentation/directions/intro#RegionBiasing.
-        :type region: str
-
         :param units: Specifies the unit system to use when displaying results. One of ['metric', 'imperial'].
-        :type units: str
-
-        :param arrival_time: Specifies the desired time of arrival for transit directions, in seconds since midnight,
-            January 1, 1970 UTC. Incompatible with departure_time.
-        :type arrival_time: int
-
-        :param departure_time: Specifies the desired time of departure. You can specify the time as an integer in
-            seconds since midnight, January 1, 1970 UTC.
-
+        :param date_time: Departure date and time (timezone aware). The default value is now (UTC).
+        :param date_time_type: One of ["depart_at", "arrive_by"].. Default "depart_at".
         :param traffic_model: Specifies the assumptions to use when calculating time in traffic. One of ['best_guess',
             'pessimistic', 'optimistic'. See https://developers.google.com/maps/documentation/directions/intro#optional-parameters
             for details.
@@ -304,14 +281,10 @@ class Google:
         if units:
             params["units"] = units
 
-        if arrival_time and departure_time:
-            raise ValueError("Specify either arrival_time or departure_time.")
-
-        if arrival_time:
-            params["arrival_time"] = str(arrival_time)
-
-        if departure_time:
-            params["departure_time"] = str(departure_time)
+        if date_time and date_time_type:
+            params["arrival_time" if date_time_type == "arrive_by" else "departure_time"] = str(
+                date_time.timestamp()
+            )
 
         if traffic_model:
             params["traffic_model"] = traffic_model
@@ -322,17 +295,12 @@ class Google:
         if transit_routing_preference:
             params["transit_routing_preference"] = transit_routing_preference
 
-        return self._parse_direction_json(
+        return self.parse_direction_json(
             self.client._request("/directions/json", get_params=params, dry_run=dry_run), alternatives
         )
 
-    def _time_object_to_aware_datetime(self, time_object):
-        timestamp = time_object["value"]
-        dt = datetime.datetime.fromtimestamp(timestamp)
-        timezone = pytz.timezone(time_object["time_zone"])
-        return dt.astimezone(timezone)
-
-    def _parse_legs(self, legs):
+    @staticmethod
+    def parse_legs(legs):
         duration = 0
         distance = 0
         geometry = []
@@ -347,15 +315,18 @@ class Google:
 
         departure_time = legs[0].get("departure_time")
         if departure_time:
-            departure_datetime = self._time_object_to_aware_datetime(departure_time)
+            departure_datetime = timestamp_to_tz_datetime(
+                departure_time["value"], departure_time["time_zone"]
+            )
 
         arrival_time = legs[-1].get("arrival_time")
         if arrival_time:
-            arrival_datetime = self._time_object_to_aware_datetime(arrival_time)
+            arrival_datetime = timestamp_to_tz_datetime(arrival_time["value"], arrival_time["time_zone"])
 
         return duration, distance, geometry, departure_datetime, arrival_datetime
 
-    def _parse_direction_json(self, response, alternatives):
+    @staticmethod
+    def parse_direction_json(response, alternatives):
         if response is None:  # pragma: no cover
             if alternatives:
                 return Directions()
@@ -378,7 +349,7 @@ class Google:
 
         directions = []
         for route in response["routes"]:
-            duration, distance, geometry, departure_datetime, arrival_datetime = self._parse_legs(
+            duration, distance, geometry, departure_datetime, arrival_datetime = Google.parse_legs(
                 route["legs"]
             )
             directions.append(
@@ -411,8 +382,8 @@ class Google:
         language: Optional[str] = None,
         region: Optional[str] = None,
         units: Optional[str] = None,
-        arrival_time: Optional[int] = None,
-        departure_time: Optional[int] = None,
+        date_time: Optional[datetime.datetime] = datetime.datetime.now(datetime.timezone.utc),
+        date_time_type: Optional[str] = None,
         traffic_model: Optional[str] = None,
         transit_mode: Optional[Union[List[str], Tuple[str]]] = None,
         transit_routing_preference: Optional[str] = None,
@@ -421,59 +392,30 @@ class Google:
         """Gets travel distance and time for a matrix of origins and destinations.
 
         :param locations: Two or more pairs of lng/lat values.
-        :type locations: list of list
-
         :param profile: The vehicle for which the route should be calculated.
             Default "driving". One of ['driving', 'walking', 'bicycling', 'transit'].
-        :type profile: str
-
         :param sources: A list of indices that refer to the list of locations
             (starting with 0). If not passed, all indices are considered.
-        :type sources: list or tuple
-
         :param destinations: A list of indices that refer to the list of locations
             (starting with 0). If not passed, all indices are considered.
-        :type destinations: list or tuple
-
         :param avoid: Indicates that the calculated route(s) should avoid the indicated features. One or more of
             ['tolls', 'highways', 'ferries', 'indoor']. Default None.
-        :param avoid: list of str
-
         :param language: Language for routing instructions. The locale of the resulting turn instructions. Visit
             https://developers.google.com/maps/faq#languagesupport for options.
-        :type language: str
-
         :param region: Specifies the region code, specified as a ccTLD ("top-level domain") two-character value.
             See https://developers.google.com/maps/documentation/directions/intro#RegionBiasing.
-        :type region: str
-
         :param units: Specifies the unit system to use when displaying results. One of ['metric', 'imperial'].
-        :type units: str
-
-        :param arrival_time: Specifies the desired time of arrival for transit directions, in seconds since midnight,
-            January 1, 1970 UTC. Incompatible with departure_time.
-        :type arrival_time: int
-
-        :param departure_time: Specifies the desired time of departure. You can specify the time as an integer in
-            seconds since midnight, January 1, 1970 UTC.
-        :type departure_time: int
-
+        :param date_time: Date and time of departure or arrival. Default value: current datetime.
+        :param date_time_type: One of ["depart_at", "arrive_by"].. Default "depart_at".
         :param traffic_model: Specifies the assumptions to use when calculating time in traffic. One of ['best_guess',
             'pessimistic', 'optimistic'. See https://developers.google.com/maps/documentation/directions/intro#optional-parameters
             for details.
-        :type traffic_model: str
-
         :param transit_mode: Specifies one or more preferred modes of transit. One or more of ['bus', 'subway', 'train',
             'tram', 'rail'].
-        :type transit_mode: list of str or tuple of str
-
         :param transit_routing_preference: Specifies preferences for transit routes. Using this parameter, you can bias
             the options returned, rather than accepting the default best route chosen by the API. One of ['less_walking',
             'fewer_transfers'].
-        :type transit_routing_preference: str
-
-        :param dry_run: Print URL and parameters without sending the request.
-        :param dry_run: bool
+        :param dry_run: Print URL and parameters without sending the request
 
         :returns: A matrix from the specified sources and destinations.
         :rtype: :class:`routingpy.matrix.Matrix`
@@ -516,11 +458,10 @@ class Google:
         if units:
             params["units"] = units
 
-        if arrival_time:
-            params["arrival_time"] = str(arrival_time)
-
-        if departure_time:
-            params["departure_time"] = str(departure_time)
+        if date_time and date_time_type:
+            params["arrival_time" if date_time_type == "arrive_by" else "departure_time"] = str(
+                date_time.timestamp()
+            )
 
         if traffic_model:
             params["traffic_model"] = traffic_model
@@ -531,11 +472,12 @@ class Google:
         if transit_routing_preference:
             params["transit_routing_preference"] = transit_routing_preference
 
-        return self._parse_matrix_json(
+        return self.parse_matrix_json(
             self.client._request("/distancematrix/json", get_params=params, dry_run=dry_run)
         )
 
-    def _parse_matrix_json(self, response):
+    @staticmethod
+    def parse_matrix_json(response):
         if response is None:  # pragma: no cover
             return Matrix()
 
